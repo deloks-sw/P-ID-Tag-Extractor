@@ -102,7 +102,14 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
   const handleReset = () => {
     setLocalPatterns(DEFAULT_PATTERNS);
     setLocalTolerances(DEFAULT_TOLERANCES);
-    setLocalAppSettings(DEFAULT_SETTINGS);
+    setLocalAppSettings({
+      ...DEFAULT_SETTINGS,
+      drawingSearchArea: DEFAULT_SETTINGS.drawingSearchArea ?? {
+        unit: 'percent', enabled: true, top: 5, right: 95, bottom: 20, left: 5, showOverlay: false,
+      },
+      sheetNoPattern: DEFAULT_SETTINGS.sheetNoPattern ?? '^\\d{3}$',
+      combineDrawingAndSheet: DEFAULT_SETTINGS.combineDrawingAndSheet ?? true,
+    });
     setLocalLoopRules(DEFAULT_SETTINGS.loopRules || {});
     setLocalInstrumentMappings(DEFAULT_SETTINGS.instrumentMappings || {});
     setInstrumentSearchQuery('');
@@ -388,7 +395,7 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                   </div>
                 </div>
 
-                {/* Claude API Key Input */}
+                {/* Open API Key Input */}
                 <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded">
                   <label className="block text-xs font-medium text-gray-700 mb-2">
                     OpenAI API Key (ChatGPT)
@@ -542,7 +549,113 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
               </div>
             </div>
 
+            {/* === P&ID No. & Sheet No. 검색 영역 (NEW) === */}
+            <div className="lg:col-span-3 p-3 bg-white border border-gray-300 rounded-lg">
+              <h4 className="text-sm font-semibold mb-3 text-gray-800">P&ID No. & Sheet No. 검색 영역</h4>
+
+              <div className="flex flex-wrap items-center gap-3 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={localAppSettings?.drawingSearchArea?.enabled ?? true}
+                    onChange={(e) =>
+                      setLocalAppSettings(prev => ({
+                        ...prev,
+                        drawingSearchArea: { ...(prev?.drawingSearchArea ?? {}), enabled: e.target.checked }
+                      }))
+                    }
+                  />
+                  영역 사용
+                </label>
+
+                <label className="flex items-center gap-2 text-sm">
+                  단위:
+                  <select
+                    value={localAppSettings?.drawingSearchArea?.unit ?? 'percent'}
+                    onChange={(e) =>
+                      setLocalAppSettings(prev => ({
+                        ...prev,
+                        drawingSearchArea: {
+                          ...(prev?.drawingSearchArea ?? {}),
+                          unit: e.target.value as 'px' | 'percent'
+                        }
+                      }))
+                    }
+                    className="border rounded px-2 py-1"
+                  >
+                    <option value="percent">%</option>
+                    <option value="px">px</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={localAppSettings?.drawingSearchArea?.showOverlay ?? false}
+                    onChange={(e) =>
+                      setLocalAppSettings(prev => ({
+                        ...prev,
+                        drawingSearchArea: { ...(prev?.drawingSearchArea ?? {}), showOverlay: e.target.checked }
+                      }))
+                    }
+                  />
+                  뷰어에 영역 표시(점선)
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                {(['top','right','bottom','left'] as const).map(side => (
+                  <label key={side} className="text-sm">
+                    {side.toUpperCase()}
+                    <input
+                      type="number"
+                      value={localAppSettings?.drawingSearchArea?.[side] ?? (side==='right'||side==='bottom' ? 95 : 5)}
+                      onChange={(e) =>
+                        setLocalAppSettings(prev => ({
+                          ...prev,
+                          drawingSearchArea: {
+                            ...(prev?.drawingSearchArea ?? {}),
+                            [side]: Number(e.target.value)
+                          }
+                        }))
+                      }
+                      className="w-full bg-white border border-gray-300 rounded-md p-2 text-sm"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <label className="text-sm">
+                  Sheet No. 패턴 (정규식)
+                  <input
+                    type="text"
+                    value={localAppSettings?.sheetNoPattern ?? '^\\d{3}$'}
+                    onChange={(e) =>
+                      setLocalAppSettings(prev => ({ ...prev, sheetNoPattern: e.target.value }))
+                    }
+                    className="w-full bg-white border border-gray-300 rounded-md p-2 text-sm font-mono"
+                    placeholder="예: ^\\d{3}$"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={localAppSettings?.combineDrawingAndSheet ?? true}
+                    onChange={(e) =>
+                      setLocalAppSettings(prev => ({ ...prev, combineDrawingAndSheet: e.target.checked }))
+                    }
+                  />
+                  도면번호와 시트번호 결합 저장 (예: EB-114739-001)
+                </label>
+              </div>
+
+              <p className="mt-2 text-xs text-gray-500">
+                * 영역 단위가 <b>%</b>인 경우 페이지 폭/높이 대비 상대값입니다. (top/bottom/right/left)
+              </p>
             </div>
+          </div>
 
         ) : activeTab === 'instruments' ? (
           /* Instrument Mappings Tab Content */
@@ -604,6 +717,8 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                     추가
                   </button>
                 </div>
+              </div>
+
               </div>
 
               {/* Existing Mappings */}

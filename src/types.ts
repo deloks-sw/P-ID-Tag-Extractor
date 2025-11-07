@@ -260,12 +260,27 @@ export interface InstrumentMapping {
   };
 }
 
+// === ADD: 도면/시트 검색 영역 옵션 ===
+export interface DrawingSearchArea {
+  unit: 'px' | 'percent';
+  // 페이지 기준 상대 박스 (Pdf 좌표 기준은 taggingService에서 변환)
+  top: number;    // unit 기준
+  right: number;  // unit 기준
+  bottom: number; // unit 기준
+  left: number;   // unit 기준
+  enabled: boolean;
+  showOverlay?: boolean;
+}
+
 export interface AppSettings {
   autoGenerateLoops: boolean;
   autoRemoveWhitespace: boolean;
   hyphenSettings: HyphenSettings;
   instrumentMappings?: InstrumentMapping;
   loopRules?: Record<string, string>;  // e.g., { 'FXI': 'FX', 'FXT': 'FX' }
+  drawingSearchArea?: DrawingSearchArea;
+  sheetNoPattern?: string;          // 예: ^\d{3}$
+  combineDrawingAndSheet?: boolean; // EB-114739 + 001 → EB-114739-001
 }
 
 export interface SettingsModalProps {

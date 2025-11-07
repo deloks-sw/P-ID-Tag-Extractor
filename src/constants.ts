@@ -34,6 +34,19 @@ export const DEFAULT_SETTINGS = {
         drawingNumber: false,
         notesAndHolds: false,
     },
+
+    drawingSearchArea: {
+      unit: 'percent',
+      enabled: true,
+      top: 5,
+      right: 95,
+      bottom: 20,
+      left: 5,
+      showOverlay: false,
+    },
+    sheetNoPattern: '^\\d{3}$',
+    combineDrawingAndSheet: true,
+
     loopRules: {
         // Default loop extraction rules
         // Format: Function Code → Loop Prefix

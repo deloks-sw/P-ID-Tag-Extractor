@@ -364,6 +364,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           showOnlySelectedRelationships={showOnlySelectedRelationships}
           setShowOnlySelectedRelationships={setShowOnlySelectedRelationships}
           detectedLines={detectedLines}
+          appSettings={appSettings}  {/* === ADD === */}
         />
       </div>
       <SelectionPanel

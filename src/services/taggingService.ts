@@ -345,165 +345,194 @@ export const extractTags = async (pdfDoc, pageNum, patterns, tolerances, appSett
             const drawingNumberRegex = new RegExp(drawingNumberRegexString, 'i');
             const rightBottomCorner = getRightBottomCorner(viewport, rotation);
 
-            // Debug: Log all text items that might look like drawing numbers
-            
-            
-            const potentialDrawingNumbers = textItems.filter(item => {
-                // Check if text contains multiple segments with dashes
-                return item.str.includes('-') && item.str.length > 10;
-            });
+            // === [NEW] 사용자 지정 검색 영역/Sheet No. 옵션 반영 ===
+            const area = appSettings?.drawingSearchArea;
+            const sheetRegex = new RegExp(appSettings?.sheetNoPattern ?? '^\\d{3}$', 'i');
+            const combine = appSettings?.combineDrawingAndSheet ?? true;
+
+            // 좌표 변환 헬퍼
+            const toPx = (val: number, unit: 'px' | 'percent', total: number) =>
+                unit === 'percent' ? (val / 100) * total : val;
+
+            // 중심점이 검색 박스 안에 있는지 확인
+            const isCenterInside = (bbox: {x1:number;y1:number;x2:number;y2:number}, box: {x1:number;y1:number;x2:number;y2:number}) => {
+                const cx = (bbox.x1 + bbox.x2) / 2;
+                const cy = (bbox.y1 + bbox.y2) / 2;
+                // 화면 좌표계(y 아래로 증가) 기준: box.y2 = 상단, box.y1 = 하단
+                return cx >= box.x1 && cx <= box.x2 && cy >= box.y2 && cy <= box.y1;
+            };
+
+            // bbox 합치기
+            const unionBbox = (a: {x1:number;y1:number;x2:number;y2:number}, b?: {x1:number;y1:number;x2:number;y2:number}) => {
+                if (!b) return a;
+                return {
+                    x1: Math.min(a.x1, b.x1),
+                    y1: Math.min(a.y1, b.y1),
+                    x2: Math.max(a.x2, b.x2),
+                    y2: Math.max(a.y2, b.y2),
+                };
+            };
+
+            // 검색 박스(px) 계산
+            let searchBox: {x1:number;y1:number;x2:number;y2:number} | null = null;
+            if (area?.enabled) {
+                const unit = area.unit ?? 'percent';
+                const pageW = viewport.width;
+                const pageH = viewport.height;
+
+                const x1 = toPx(area.left   ?? 5,  unit, pageW);
+                const x2 = toPx(area.right  ?? 95, unit, pageW);
+                const yTop = toPx(area.top    ?? 5,  unit, pageH);
+                const yBot = toPx(area.bottom ?? 20, unit, pageH);
+
+                // y2 = 상단, y1 = 하단(화면 좌표계)
+                searchBox = { x1, x2, y1: yBot, y2: yTop };
+            }
+
+            // === (선택) 디버그: 도면처럼 보이는 긴 대시 문자열들 ===
+            const potentialDrawingNumbers = textItems.filter(item =>
+                item.str.includes('-') && item.str.length > 10
+            );
             if (potentialDrawingNumbers.length > 0) {
-                
                 potentialDrawingNumbers.forEach(item => {
-                    const matches = item.str.match(drawingNumberRegex);
-                    
+                    const _matches = item.str.match(drawingNumberRegex);
+                    // console.debug('[DBG] potential DN:', item.str, _matches);
                 });
             }
 
-            let bestCandidate = null;
-            let minDistanceSq = Infinity;
-            const candidates = []; // For debugging
+            let bestCandidate: any = null;
+            const candidates: any[] = [];
 
-            // First pass: collect all Drawing Number candidates with metadata
+            // 후보 수집
             for (let i = 0; i < textItems.length; i++) {
                 if (consumedIndices.has(i)) continue;
 
                 const item = textItems[i];
                 const match = item.str.match(drawingNumberRegex);
+                if (!match) continue;
 
-                if (match) {
-                    // Log the exact text from PDF and what was matched
-                    
-                    
-                    
-                    
+                const bbox = calculateBbox(item, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
 
-                    const bbox = calculateBbox(item, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
-                    
-                    // Calculate distance to bottom-right corner
-                    // Use the bottom-right point of the text bbox for distance calculation
-                    const dx = rightBottomCorner.x - bbox.x2;  // Distance from right edge
-                    let targetY;
-                    switch (rotation) {
-                        case 0:
-                            // 0°: Y increases downward, so max Y is bottom
-                            targetY = Math.max(bbox.y1, bbox.y2);
-                            break;
-                        case 90:
-                            // 90°: After rotation, max Y is still bottom
-                            targetY = Math.max(bbox.y1, bbox.y2);
-                            break;
-                        case 180:
-                            // 180°: After rotation, min Y is bottom
-                            targetY = Math.min(bbox.y1, bbox.y2);
-                            break;
-                        case 270:
-                            // 270°: After rotation, min Y is bottom  
-                            targetY = Math.min(bbox.y1, bbox.y2);
-                            break;
-                        default:
-                            targetY = Math.max(bbox.y1, bbox.y2);
-                            break;
-                    }
-                    const dy = rightBottomCorner.y - targetY;   // Distance from bottom edge
-                    const distanceSq = dx * dx + dy * dy;
-                    const distance = Math.sqrt(distanceSq);
-
-                    // Store candidate for debugging
-                    candidates.push({
-                        item,
-                        index: i,
-                        bbox,
-                        text: match[0],
-                        distance,
-                        distanceSq,
-                        dx,
-                        dy,
-                        targetY,
-                        isSelected: false
-                    });
+                // [NEW] 검색 박스가 켜져 있으면 박스 내부 항목만 허용
+                if (searchBox && !isCenterInside(bbox, searchBox)) {
+                    continue;
                 }
+
+                // 거리 계산(오른쪽 아래 기준)
+                const dx = rightBottomCorner.x - bbox.x2;  // right edge 차이
+                let targetY;
+                switch (rotation) {
+                    case 0:
+                    case 90:
+                        targetY = Math.max(bbox.y1, bbox.y2); // 화면 하단
+                        break;
+                    case 180:
+                    case 270:
+                        targetY = Math.min(bbox.y1, bbox.y2); // 화면 하단(회전 반영)
+                        break;
+                    default:
+                        targetY = Math.max(bbox.y1, bbox.y2);
+                        break;
+                }
+                const dy = rightBottomCorner.y - targetY;
+                const distanceSq = dx * dx + dy * dy;
+
+                candidates.push({
+                    item,
+                    index: i,
+                    bbox,
+                    text: match[0],
+                    distance: Math.sqrt(distanceSq),
+                    distanceSq,
+                    dx,
+                    dy,
+                    targetY,
+                    isSelected: false
+                });
             }
 
-            // Enhanced selection algorithm with quality scoring
-            const scoreCandidate = (candidate) => {
+            // 품질 점수 함수(기존 로직 유지)
+            const scoreCandidate = (candidate: any) => {
                 let score = 0;
                 const text = candidate.text;
 
-                // Quality factors (higher is better)
-                if (!text.startsWith('-')) score += 1000;  // Strong preference for no leading dash
-                if (/^[A-Z0-9]/i.test(text)) score += 500;  // Starts with alphanumeric
-                if (/^[0-9]{5}[A-Z]/.test(text)) score += 300;  // Matches format like 00342GS
-                if (text.match(/-/g)?.length >= 3) score += 200;  // Has multiple segments (complete)
-                if (text.length > 15) score += 100;  // Longer is usually more complete
+                if (!text.startsWith('-')) score += 1000;
+                if (/^[A-Z0-9]/i.test(text)) score += 500;
+                if (/^[0-9]{5}[A-Z]/.test(text)) score += 300;
+                if (text.match(/-/g)?.length >= 3) score += 200;
+                if (text.length > 15) score += 100;
 
-                // Distance penalty (lower distance is better, so we subtract)
                 score -= Math.sqrt(candidate.distanceSq) * 0.1;
-
                 return score;
             };
 
-            // Score all candidates
-            candidates.forEach(c => {
-                c.score = scoreCandidate(c);
-            });
-
-            // Sort by score (highest first)
+            candidates.forEach(c => c.score = scoreCandidate(c));
             const sortedCandidates = [...candidates].sort((a, b) => b.score - a.score);
+            // console.debug('[DBG] top DN candidates:', sortedCandidates.slice(0,3));
 
-            
-            sortedCandidates.slice(0, 3).forEach((c, idx) => {
-                
-            });
-
-            // Select the highest scoring candidate
             if (sortedCandidates.length > 0) {
                 bestCandidate = sortedCandidates[0];
-                
-            }
-
-            // Mark selected candidate for debugging
-            if (bestCandidate) {
-                candidates.forEach(c => {
-                    c.isSelected = (c.index === bestCandidate.index);
-                });
-            }
-
-            // Debug logging for Drawing Number selection
-            if (candidates.length > 0) {
-                
-                
-                
-                
-                // Sort by distance for easier reading
-                const sortedCandidates = [...candidates].sort((a, b) => a.distance - b.distance);
-                sortedCandidates.forEach((candidate, index) => {
-                    const marker = candidate.isSelected ? '🏆 SELECTED:' : `${index + 1}.`;
-                    
-                    
-                    
-                });
-                
             }
 
             if (bestCandidate) {
-                // For Drawing Numbers, we want to preserve the exact text as recognized
-                // Don't remove whitespace from drawing numbers to maintain their original format
-                const drawingText = bestCandidate.text;
-                
+                candidates.forEach(c => { c.isSelected = (c.index === bestCandidate.index); });
 
-                foundTags.push({
-                    id: uuidv4(),
-                    text: drawingText,  // Use exact text without whitespace removal
-                    page: pageNum,
-                    bbox: bestCandidate.bbox,
-                    category: Category.DrawingNumber,
+                // === [NEW] 같은 줄 & 오른쪽에서 Sheet No. 찾기 ===
+                // 허용치(필요 시 tolerances에서 가져와도 됨)
+                const Y_TOL = 3;  // 같은 줄(y 정렬) 허용치
+                const X_GAP = 2;  // 오른쪽 인접 기준
+
+                // 같은 행 & 오른쪽 텍스트
+                const sameLine = textItems.filter(t => {
+                    const tb = calculateBbox(t, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
+                    const sameRow = Math.abs(tb.y2 - bestCandidate.bbox.y2) <= Y_TOL;
+                    const onRight = tb.x1 >= (bestCandidate.bbox.x2 - X_GAP);
+                    return sameRow && onRight;
                 });
+
+                const sheetItem = sameLine.find(t => {
+                    const s = (t.str || '').trim();
+                    return sheetRegex.test(s);
+                });
+
+                const drawingText = bestCandidate.text.trim();
+                let finalText = drawingText;
+                const metadata: any = { page: pageNum };
+
+                if (sheetItem) {
+                    const sb = calculateBbox(sheetItem, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
+                    metadata.sheet = (sheetItem.str || '').trim();
+                    if (combine) {
+                        finalText = `${drawingText}-${metadata.sheet}`;
+                    }
+
+                    foundTags.push({
+                        id: uuidv4(),
+                        text: finalText,     // 도면-시트 결합(옵션)
+                        page: pageNum,
+                        bbox: unionBbox(bestCandidate.bbox, sb),
+                        category: Category.DrawingNumber,
+                        metadata
+                    });
+                } else {
+                    // 시트가 없으면 도면번호만
+                    foundTags.push({
+                        id: uuidv4(),
+                        text: finalText,
+                        page: pageNum,
+                        bbox: bestCandidate.bbox,
+                        category: Category.DrawingNumber,
+                        metadata
+                    });
+                }
+
                 consumedIndices.add(bestCandidate.index);
             }
         } catch (error) {
+            // console.error('[DN ERROR]', error);
         }
     }
+
 
     // Final Pass: Collect all un-tagged items as raw text
     for (let i = 0; i < textItems.length; i++) {
