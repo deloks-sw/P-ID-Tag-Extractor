@@ -533,7 +533,6 @@ export const extractTags = async (pdfDoc, pageNum, patterns, tolerances, appSett
         }
     }
 
-
     // Final Pass: Collect all un-tagged items as raw text
     for (let i = 0; i < textItems.length; i++) {
         if (consumedIndices.has(i)) continue;

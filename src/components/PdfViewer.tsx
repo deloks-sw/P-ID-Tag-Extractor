@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useLayoutEffect, useMemo } from 'react';
-import { RelationshipType, Category } from '../types.ts';
+import { RelationshipType, Category, type AppSettings } from '../types.ts';
 import { CATEGORY_COLORS, DEFAULT_COLORS } from '../constants.ts';
 import { TagHighlight, getHighlightTypeFromEntity, getHighlightEffect } from './TagHighlight.tsx';
 import { v4 as uuidv4 } from 'uuid';
@@ -127,6 +127,7 @@ const PdfViewerComponent = ({
   setShowOnlySelectedRelationships,
   onOPCTagClick,
   detectedLines = [],
+  appSettings,                 // <<< ADD
 }) => {
   const canvasRef = useRef(null);
   const viewerRef = useRef(null);
@@ -1438,6 +1439,35 @@ const PdfViewerComponent = ({
     return { rectX, rectY, rectWidth, rectHeight };
   };
 
+  // ADD: 도면 검색 영역 오버레이 좌표 계산 (viewport 기준)
+  const computeDrawingOverlayRect = () => {
+    const area = (appSettings as AppSettings | undefined)?.drawingSearchArea;
+    if (!viewport || !area || area.enabled === false) return null;
+
+    const pageW = viewport.width;
+    const pageH = viewport.height;
+    const unit = area.unit === 'px' ? 'px' : 'percent';
+
+    const toPxX = (v: number) => (unit === 'percent' ? (v / 100) * pageW : v);
+    const toPxY = (v: number) => (unit === 'percent' ? (v / 100) * pageH : v);
+
+    const topPx = toPxY(area.top ?? 5);
+    const rightPx = toPxX(area.right ?? 95);
+    const bottomPx = toPxY(area.bottom ?? 20);
+    const leftPx = toPxX(area.left ?? 5);
+
+    const x = leftPx;
+    const y = topPx;
+    const width = Math.max(0, rightPx - leftPx);
+    const height = Math.max(0, bottomPx - topPx);
+
+    if (width <= 0 || height <= 0) return null;
+
+    return { x, y, width, height };
+  };
+
+
+
   const getModeStyles = () => {
     switch(mode){
       case 'connect': return 'cursor-crosshair ring-2 ring-blue-500';
@@ -1465,6 +1495,37 @@ const PdfViewerComponent = ({
                     <marker id="arrowhead-connect" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill={colors.relationships.connection} /></marker>
                     <marker id="arrowhead-install" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill={colors.relationships.installation} /></marker>
                     </defs>
+
+                    {/* 도면 검색 영역 오버레이 */}
+                    {appSettings?.drawingSearchArea?.showOverlay && (() => {
+                      const rect = computeDrawingOverlayRect();
+                      if (!rect) return null;
+                      return (
+                        <g pointerEvents="none">
+                          {/* 채움(옅은 블루) */}
+                          <rect
+                            x={rect.x}
+                            y={rect.y}
+                            width={rect.width}
+                            height={rect.height}
+                            fill="rgba(59,130,246,0.08)"  // tailwind sky-500 느낌
+                            rx="6"
+                          />
+                          {/* 점선 테두리 */}
+                          <rect
+                            x={rect.x}
+                            y={rect.y}
+                            width={rect.width}
+                            height={rect.height}
+                            fill="none"
+                            stroke="rgba(59,130,246,0.9)"
+                            strokeWidth="2"
+                            strokeDasharray="6 4"
+                            rx="6"
+                          />
+                        </g>
+                      );
+                    })()}
 
                     {/* Render detected CV lines (piping) - shown as debug visualization */}
                     {detectedLines
@@ -1912,6 +1973,7 @@ export const PdfViewer = React.memo(PdfViewerComponent, (prevProps, nextProps) =
     prevProps.selectedRawTextItemIds === nextProps.selectedRawTextItemIds &&
     prevProps.selectedDescriptionIds === nextProps.selectedDescriptionIds &&
     prevProps.visibilitySettings === nextProps.visibilitySettings &&
-    prevProps.showAutoLinkRanges === nextProps.showAutoLinkRanges
+    prevProps.showAutoLinkRanges === nextProps.showAutoLinkRanges &&
+    prevProps.appSettings === nextProps.appSettings   // ✅ 추가
   );
 });
