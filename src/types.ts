@@ -281,6 +281,7 @@ export interface AppSettings {
   drawingSearchArea?: DrawingSearchArea;
   sheetNoPattern?: string;          // 예: ^\d{3}$
   combineDrawingAndSheet?: boolean; // EB-114739 + 001 → EB-114739-001
+  sheetNoTolerancePx?: number; // Sheet No.를 탐색할 때 쓰는 좌/우 허용거리(px)
 }
 
 export interface SettingsModalProps {

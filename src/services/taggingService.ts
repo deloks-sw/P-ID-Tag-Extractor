@@ -479,7 +479,7 @@ export const extractTags = async (pdfDoc, pageNum, patterns, tolerances, appSett
 
                 // === [NEW] 같은 줄 & 오른쪽에서 Sheet No. 찾기 ===
                 // 허용치(필요 시 tolerances에서 가져와도 됨)
-                const Y_TOL = 3;  // 같은 줄(y 정렬) 허용치
+                const Y_TOL = Math.max(0, appSettings?.sheetNoTolerancePx ?? 3);
                 const X_GAP = 2;  // 오른쪽 인접 기준
 
                 // 같은 행 & 오른쪽 텍스트

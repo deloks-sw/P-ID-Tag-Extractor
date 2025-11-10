@@ -651,6 +651,28 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                 </label>
               </div>
 
+              {/* Sheet No. 탐색 허용 오차 (좌/우 전용) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                <label className="text-sm">
+                  Sheet No. 탐색 허용 오차 (px, 좌/우 전용)
+                  <input
+                    type="number"
+                    min={0}
+                    value={
+                      Number.isFinite(localAppSettings?.sheetNoTolerance as number)
+                        ? (localAppSettings?.sheetNoTolerance as number)
+                        : 60
+                    }
+                    onChange={(e) => {
+                      const v = Math.max(0, Number(e.target.value || 0));
+                      setLocalAppSettings(prev => ({ ...prev, sheetNoTolerance: v }));
+                    }}
+                    className="w-full bg-white border border-gray-300 rounded-md p-2 text-sm"
+                    placeholder="예: 60"
+                  />
+                </label>
+              </div>
+
               <p className="mt-2 text-xs text-gray-500">
                 * 영역 단위가 <b>%</b>인 경우 페이지 폭/높이 대비 상대값입니다. (top/bottom/right/left)
               </p>

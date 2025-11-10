@@ -46,6 +46,8 @@ export const DEFAULT_SETTINGS = {
     },
     sheetNoPattern: '^\\d{3}$',
     combineDrawingAndSheet: true,
+    sheetNoTolerancePx: 3, // Sheet No. Y-허용오차(px). 사용자가 변경 가능.
+    sheetNoTolerance: 60, // <<< 기본 60px 제안
 
     loopRules: {
         // Default loop extraction rules

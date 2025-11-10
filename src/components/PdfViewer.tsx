@@ -154,16 +154,34 @@ const PdfViewerComponent = ({
   // OPC Navigation state
   const [opcNavigationButton, setOpcNavigationButton] = useState(null); // { tagId, x, y, targetTagId, targetPage }
   const [pendingOpcTarget, setPendingOpcTarget] = useState(null); // { targetTagId, targetPage }
-  
+
   // =========================
-  // Sheet No. 전용 tolerance (UI + 로직)  <<< 추가
+  // Sheet No. 전용 tolerance/regex (SettingsModal 연동)
   // =========================
-  // tolerances?.sheetNo 값이 있으면 초기값으로 사용, 없으면 80px 기본값
+  // SettingsModal에서 저장한 appSettings.sheetNoTolerance 를 사용 (기본 80px)
   const [sheetNoTolerancePx, setSheetNoTolerancePx] = useState<number>(
-    Number.isFinite(tolerances?.sheetNo) ? Number(tolerances.sheetNo) : 80
+    Number.isFinite(appSettings?.sheetNoTolerance)
+      ? Number(appSettings.sheetNoTolerance)
+      : 80
   );
-  // 정규식: 세 자리 숫자 (001, 010, 123 등)
-  const SHEET_NO_REGEX = /\b(\d{3})\b/;
+  // SettingsModal의 sheetNoPattern 사용 (기본 ^\d{3}$)
+  const SHEET_NO_REGEX = useMemo(() => {
+    const pattern = appSettings?.sheetNoPattern || '^\\d{3}$';
+    try {
+      return new RegExp(pattern);
+    } catch {
+      // 사용자가 잘못된 정규식을 입력했을 때 안전장치
+      return /^\d{3}$/;
+    }
+  }, [appSettings?.sheetNoPattern]);
+
+  // appSettings가 바뀌면 허용오차 state도 동기화
+  useEffect(() => {
+    if (Number.isFinite(appSettings?.sheetNoTolerance)) {
+      setSheetNoTolerancePx(Number(appSettings.sheetNoTolerance));
+    }
+  }, [appSettings?.sheetNoTolerance]);
+
 
   // 좌/우 방향 판정과 거리 계산
   const _horizontalDistance = (fromRect, toRect) => {
@@ -221,8 +239,9 @@ const PdfViewerComponent = ({
         const vScore = _vertOverlapScore(tagRect, i.rect);
         if (vScore < 0.1) return false;
 
-        // 텍스트가 세 자리 숫자를 포함?
+        // 텍스트가 설정된 정규식과 일치?
         return SHEET_NO_REGEX.test(i.text);
+        
       })
       .map((i) => {
         const dist = _horizontalDistance(tagRect, i.rect);
@@ -234,7 +253,7 @@ const PdfViewerComponent = ({
       .sort((a, b) => b.score - a.score);
 
     return candidates.length > 0 ? candidates[0].item : null;
-  }, [viewport, rawTextItems, currentPage, scale, sheetNoTolerancePx]);
+  }, [viewport, rawTextItems, currentPage, scale, sheetNoTolerancePx, SHEET_NO_REGEX]);
 
   // DrawingNumber 선택 시 자동으로 Sheet No. 찾아 Annotation 연결(중복 방지)
   useEffect(() => {
@@ -1409,50 +1428,8 @@ const PdfViewerComponent = ({
 
   return (
     <div className="relative h-full w-full">
-      {/* ==== Sheet No. tolerance (고정 오버레이 UI) ==== */}
-      <div
-        style={{
-          position: 'fixed',
-          top: '14px',
-          right: '14px',
-          zIndex: 9999,                         // 항상 맨 위
-          background: 'rgba(255,255,255,0.95)', // Tailwind 없어도 보이게
-          backdropFilter: 'saturate(180%) blur(6px)',
-          border: '1px solid rgba(100,116,139,0.35)',
-          borderRadius: '12px',
-          padding: '8px 10px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          boxShadow:
-            '0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)',
-        }}
-      >
-        <span style={{ fontSize: 12, color: '#334155', fontWeight: 600 }}>
-          Sheet No. tol (px)
-        </span>
-        <input
-          type="number"
-          value={sheetNoTolerancePx}
-          min={0}
-          step={5}
-          onChange={(e) =>
-            setSheetNoTolerancePx(Math.max(0, Number(e.currentTarget.value || 0)))
-          }
-          title="DrawingNumber 주변 좌/우 탐색 허용 거리(px). Sheet No. 탐색에만 사용됩니다."
-          style={{
-            width: 88,
-            fontSize: 13,
-            padding: '6px 8px',
-            border: '1px solid #cbd5e1',
-            borderRadius: 8,
-            outline: 'none',
-          }}
-          onFocus={(e) => (e.currentTarget.style.borderColor = '#8b5cf6')}
-          onBlur={(e) => (e.currentTarget.style.borderColor = '#cbd5e1')}
-        />
-        <span style={{ fontSize: 10, color: '#64748b' }}>좌/우만 탐색</span>
-      </div>
+      {/* NOTE: Sheet No. tolerance 입력은 SettingsModal에서 관리합니다.
+               (오버레이 UI는 제거/비활성) */}
 
       <div ref={scrollContainerRef} className={`h-full w-full overflow-auto ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}>
         <div className="p-4 grid place-items-center min-h-full">
