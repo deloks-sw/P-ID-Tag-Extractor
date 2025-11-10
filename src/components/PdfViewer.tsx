@@ -127,7 +127,7 @@ const PdfViewerComponent = ({
   setShowOnlySelectedRelationships,
   onOPCTagClick,
   detectedLines = [],
-  appSettings,                 // <<< ADD
+  appSettings,                 // <<< keep (already in your code)
 }) => {
   const canvasRef = useRef(null);
   const viewerRef = useRef(null);
@@ -155,61 +155,159 @@ const PdfViewerComponent = ({
   const [opcNavigationButton, setOpcNavigationButton] = useState(null); // { tagId, x, y, targetTagId, targetPage }
   const [pendingOpcTarget, setPendingOpcTarget] = useState(null); // { targetTagId, targetPage }
   
+  // =========================
+  // Sheet No. 전용 tolerance (UI + 로직)  <<< 추가
+  // =========================
+  // tolerances?.sheetNo 값이 있으면 초기값으로 사용, 없으면 80px 기본값
+  const [sheetNoTolerancePx, setSheetNoTolerancePx] = useState<number>(
+    Number.isFinite(tolerances?.sheetNo) ? Number(tolerances.sheetNo) : 80
+  );
+  // 정규식: 세 자리 숫자 (001, 010, 123 등)
+  const SHEET_NO_REGEX = /\b(\d{3})\b/;
+
+  // 좌/우 방향 판정과 거리 계산
+  const _horizontalDistance = (fromRect, toRect) => {
+    // to가 왼쪽이면 fromRect.x1 - toRect.x2, 오른쪽이면 toRect.x1 - fromRect.x2
+    if (toRect.x2 <= fromRect.x1) {
+      return fromRect.x1 - toRect.x2; // left side distance
+    }
+    if (toRect.x1 >= fromRect.x2) {
+      return toRect.x1 - fromRect.x2; // right side distance
+    }
+    return 0; // overlap horizontally
+  };
+
+  const _rectFromBbox = (bbox) => ({
+    x1: bbox.x1 * scale,
+    y1: bbox.y1 * scale,
+    x2: bbox.x2 * scale,
+    y2: bbox.y2 * scale,
+    w: (bbox.x2 - bbox.x1) * scale,
+    h: (bbox.y2 - bbox.y1) * scale,
+    cx: ((bbox.x1 + bbox.x2) / 2) * scale,
+    cy: ((bbox.y1 + bbox.y2) / 2) * scale,
+  });
+
+  const _vertOverlapScore = (a, b) => {
+    // 세로 겹침 비율 (0~1)
+    const top = Math.max(a.y1, b.y1);
+    const bot = Math.min(a.y2, b.y2);
+    const overlap = Math.max(0, bot - top);
+    const base = Math.min(a.h, b.h) || 1;
+    return overlap / base;
+  };
+
+  // DrawingNumber 태그에서 sheet no. 후보 RawText 찾기 (좌/우, tolerance 내, 3자리 숫자)
+  const findSheetNoCandidate = useCallback((drawingTag) => {
+    if (!viewport || !drawingTag) return null;
+
+    const tagRect = _rectFromBbox(drawingTag.bbox);
+
+    // 같은 페이지의 RawText만
+    const candidates = rawTextItems
+      .filter((i) => i.page === currentPage)
+      .map((i) => ({ ...i, rect: _rectFromBbox(i.bbox) }))
+      .filter((i) => {
+        // 좌/우만 탐색: i가 태그의 좌측(끝이 태그의 좌측) 또는 우측(시작이 태그의 우측)
+        const isLeft = i.rect.x2 <= tagRect.x1;
+        const isRight = i.rect.x1 >= tagRect.x2;
+        if (!isLeft && !isRight) return false; // 위/아래/겹침 배제
+
+        // tolerance 내?
+        const dist = _horizontalDistance(tagRect, i.rect);
+        if (dist < 0 || dist > sheetNoTolerancePx) return false;
+
+        // 세로 정렬도 최소한 맞아야 함(겹침 비율 0.1 이상)
+        const vScore = _vertOverlapScore(tagRect, i.rect);
+        if (vScore < 0.1) return false;
+
+        // 텍스트가 세 자리 숫자를 포함?
+        return SHEET_NO_REGEX.test(i.text);
+      })
+      .map((i) => {
+        const dist = _horizontalDistance(tagRect, i.rect);
+        const vScore = _vertOverlapScore(tagRect, i.rect);
+        // 점수: 가까울수록, 세로 정렬이 잘 맞을수록 가중
+        const score = 10000 - dist * 100 + vScore * 50;
+        return { item: i, dist, vScore, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return candidates.length > 0 ? candidates[0].item : null;
+  }, [viewport, rawTextItems, currentPage, scale, sheetNoTolerancePx]);
+
+  // DrawingNumber 선택 시 자동으로 Sheet No. 찾아 Annotation 연결(중복 방지)
+  useEffect(() => {
+    if (!selectedTagIds || selectedTagIds.length !== 1) return;
+
+    const tag = tags.find((t) => t.id === selectedTagIds[0]);
+    if (!tag || tag.page !== currentPage) return;
+    if (tag.category !== Category.DrawingNumber) return;
+
+    const candidate = findSheetNoCandidate(tag);
+    if (!candidate) return;
+
+    // 이미 연결되어 있으면 패스 (DrawingNumber -> RawText, Annotation)
+    const exists = relationships.some(
+      (r) => r.type === RelationshipType.Annotation && r.from === tag.id && r.to === candidate.id
+    );
+    if (!exists) {
+      const newRel = {
+        id: uuidv4(),
+        from: tag.id,
+        to: candidate.id,
+        type: RelationshipType.Annotation,
+      };
+      setRelationships((prev) => [...prev, newRel]);
+    }
+
+    // 선택/강조 상태로 보여주기
+    setSelectedRawTextItemIds([candidate.id]);
+    setHighlightedRawTextItemIds(new Set([candidate.id]));
+    // 2초 후 강조 해제 (선택은 유지)
+    const timer = setTimeout(() => setHighlightedRawTextItemIds(new Set()), 2000);
+    return () => clearTimeout(timer);
+  }, [
+    selectedTagIds,
+    currentPage,
+    tags,
+    relationships,
+    setRelationships,
+    setSelectedRawTextItemIds,
+    setHighlightedRawTextItemIds,
+    findSheetNoCandidate,
+  ]);
+  // =========================
+  // // Sheet No. 전용 tolerance (끝)
+  // =========================
+  
   // OPC Navigation function
   const handleOpcNavigation = useCallback(() => {
-    
     if (opcNavigationButton) {
       const { targetTagId, targetPage } = opcNavigationButton;
-      
-      
-      // Set pending target for after page change
       setPendingOpcTarget({ targetTagId, targetPage });
-      
-      // Navigate to target page
       setCurrentPage(targetPage);
-      
-      // Hide navigation button
       setOpcNavigationButton(null);
-      
     } else {
     }
   }, [opcNavigationButton, setCurrentPage, currentPage]);
   
   // Handle OPC target selection after page change
   useEffect(() => {
-    
     if (pendingOpcTarget && currentPage === pendingOpcTarget.targetPage && viewport) {
       const { targetTagId } = pendingOpcTarget;
-      
-      // Check if target tag exists on current page
       const targetTag = tags.find(t => t.id === targetTagId && t.page === currentPage);
-      
-      
       if (targetTag) {
-        
-        // Wait for page to render, then select, highlight, and scroll to center
         const timer = setTimeout(() => {
-          
-          // Set selection
           setSelectedTagIds([targetTagId]);
-          
-          // Set highlight
           setHighlightedTagIds(new Set([targetTagId]));
-          
-          // Scroll to center the target tag
           const scrollData = { tagId: targetTagId, timestamp: Date.now() };
           setScrollToCenter(scrollData);
-          
-          
-          // Clear pending target AFTER processing is complete
           setPendingOpcTarget(null);
-          
-          // Clear highlight after 2 seconds
           setTimeout(() => {
             setHighlightedTagIds(new Set());
           }, 2000);
-        }, 300); // Increased delay further
-        
+        }, 300);
         return () => clearTimeout(timer);
       } else {
       }
@@ -238,21 +336,16 @@ const PdfViewerComponent = ({
 
   // Auto-clear tag highlight (not selection) after 3 seconds
   useEffect(() => {
-    // Clear existing timer
     if (selectionTimerRef.current) {
       clearTimeout(selectionTimerRef.current);
       selectionTimerRef.current = null;
     }
-
-    // Only set timer if tags are highlighted
     if (highlightedTagIds.size > 0) {
       selectionTimerRef.current = setTimeout(() => {
-        setHighlightedTagIds(new Set()); // Clear highlight only
+        setHighlightedTagIds(new Set());
         selectionTimerRef.current = null;
-      }, 3000); // 3 seconds
+      }, 3000);
     }
-
-    // Cleanup timer on component unmount
     return () => {
       if (selectionTimerRef.current) {
         clearTimeout(selectionTimerRef.current);
@@ -270,8 +363,6 @@ const PdfViewerComponent = ({
         onUpdateRawTextItemText(editingRawTextId, editingText.trim());
       }
     }
-    
-    // Clear editing state
     setEditingTagId(null);
     setEditingRawTextId(null);
     setEditingText('');
@@ -686,26 +777,16 @@ const PdfViewerComponent = ({
         // If multiple tags are selected (2 or more), create sequential connections
         if (selectedTagIds.length >= 2) {
           e.preventDefault();
-          
-          
-          // Get selected tags in selection order (not sorted)
           const selectedTags = selectedTagIds
             .map(id => tags.find(tag => tag.id === id))
             .filter(tag => !!tag);
-          
-          
-          // Create sequential relationships: A→B, B→C, C→D, etc.
           const newRelationships = [];
           for (let i = 0; i < selectedTags.length - 1; i++) {
             const fromTag = selectedTags[i];
             const toTag = selectedTags[i + 1];
-            
-            
-            // Check if relationship already exists
             const existsAlready = relationships.some(r => 
               r.from === fromTag.id && r.to === toTag.id && r.type === RelationshipType.Connection
             );
-            
             if (!existsAlready) {
               newRelationships.push({
                 id: uuidv4(),
@@ -716,27 +797,20 @@ const PdfViewerComponent = ({
             } else {
             }
           }
-          
-          
           if (newRelationships.length > 0) {
             setRelationships(prev => [...prev, ...newRelationships]);
           }
-          
-          // Clear selection after creating relationships
           setSelectedTagIds([]);
           setSelectedRawTextItemIds([]);
         } else {
-          // Original behavior for 0-1 selected tags: toggle connect mode
           if (mode === 'connect') {
             setMode('select');
             setRelationshipStartTag(null);
           } else {
             setMode('connect');
-            // If exactly one tag is selected, use it as the start tag
             if (selectedTagIds.length === 1) {
               const startTag = tags.find(t => t.id === selectedTagIds[0]);
               setRelationshipStartTag(selectedTagIds[0]);
-              // Keep the selection to show visually
             } else {
               setRelationshipStartTag(null);
               setSelectedTagIds([]);
@@ -769,7 +843,6 @@ const PdfViewerComponent = ({
         const selectedTags = tags.filter(tag => selectedTagIds.includes(tag.id));
         const selectedRawItems = rawTextItems.filter(item => selectedRawTextItemIds.includes(item.id));
         const allSelectedItems = [...selectedTags, ...selectedRawItems];
-        
         if (allSelectedItems.length > 0) {
           onCreateDescription(allSelectedItems);
           setSelectedTagIds([]);
@@ -781,7 +854,6 @@ const PdfViewerComponent = ({
         const selectedTags = tags.filter(tag => selectedTagIds.includes(tag.id));
         const selectedRawItems = rawTextItems.filter(item => selectedRawTextItemIds.includes(item.id));
         const allSelectedItems = [...selectedTags, ...selectedRawItems];
-        
         if (allSelectedItems.length > 0) {
           onCreateHoldDescription(allSelectedItems);
           setSelectedTagIds([]);
@@ -792,54 +864,31 @@ const PdfViewerComponent = ({
       } else if (e.key.toLowerCase() === 'r' && mode === 'select' && (selectedTagIds.length > 0 || selectedRawTextItemIds.length > 0)) {
         const newRelationships = [];
         const selected = tags.filter(t => selectedTagIds.includes(t.id));
-        
-        // Specifically identify Equipment, Line, or Instrument tags
         const itemTagCategories = [Category.Instrument, Category.Line];
         const itemTags = selected.filter(t => itemTagCategories.includes(t.category));
-
-        // VALIDATION: Ensure at most one item tag is selected
         if (itemTags.length > 1) {
             alert("Please select only one Equipment, Line, or Instrument tag at a time to create relationships.");
-            return; // Stop processing
+            return;
         }
-        
-        // Proceed if there is exactly one item tag.
         if (itemTags.length === 1) {
             const itemTag = itemTags[0];
             const noteTags = selected.filter(t => t.category === Category.NotesAndHolds);
-
-            // Create Note relationships ONLY if within diagonal radius (for Instrument tags)
             if (itemTag.category === Category.Instrument) {
-                // Calculate center of instrument bbox
                 const instrumentCenter = {
                     x: (itemTag.bbox.x1 + itemTag.bbox.x2) / 2,
                     y: (itemTag.bbox.y1 + itemTag.bbox.y2) / 2
                 };
-
-                // Calculate diagonal radius of instrument bbox (3x for better range)
                 const width = itemTag.bbox.x2 - itemTag.bbox.x1;
                 const height = itemTag.bbox.y2 - itemTag.bbox.y1;
                 const diagonalRadius = Math.sqrt(width * width + height * height) / 2 * 3;
-
-                
-                
-
-                // Helper function: Check if a circle intersects with a rectangle
                 const circleIntersectsRectangle = (circleCenter, radius, rect) => {
-                    // Find the closest point on the rectangle to the circle center
                     const closestX = Math.max(rect.x1, Math.min(circleCenter.x, rect.x2));
                     const closestY = Math.max(rect.y1, Math.min(circleCenter.y, rect.y2));
-
-                    // Calculate distance from circle center to closest point
                     const distX = circleCenter.x - closestX;
                     const distY = circleCenter.y - closestY;
                     const distance = Math.sqrt(distX * distX + distY * distY);
-
-                    
                     return distance <= radius;
                 };
-
-                // Only connect NOTE tags within the diagonal radius
                 for (const noteTag of noteTags) {
                     if (circleIntersectsRectangle(instrumentCenter, diagonalRadius, noteTag.bbox)) {
                         newRelationships.push({
@@ -848,13 +897,10 @@ const PdfViewerComponent = ({
                             to: noteTag.id,
                             type: RelationshipType.Note,
                         });
-                        
                     } else {
-                        
                     }
                 }
             } else {
-                // For Line tags, use the old behavior (connect all selected)
                 for (const noteTag of noteTags) {
                     newRelationships.push({
                         id: uuidv4(),
@@ -864,8 +910,6 @@ const PdfViewerComponent = ({
                     });
                 }
             }
-            
-            // Create Annotation relationships (item -> raw text)
             for (const rawId of selectedRawTextItemIds) {
                 newRelationships.push({
                     id: uuidv4(),
@@ -875,11 +919,9 @@ const PdfViewerComponent = ({
                 });
             }
         }
-        
         if (newRelationships.length > 0) {
             const existingRels = new Set(relationships.map(r => `${r.from}-${r.to}-${r.type}`));
             const uniqueNewRels = newRelationships.filter(r => !existingRels.has(`${r.from}-${r.to}-${r.type}`));
-    
             if (uniqueNewRels.length > 0) {
                 setRelationships(prev => [...prev, ...uniqueNewRels]);
             }
@@ -890,7 +932,6 @@ const PdfViewerComponent = ({
         const selected = tags.filter(t => selectedTagIds.includes(t.id));
         const baseTags = selected.filter(t => t.category === Category.Instrument || t.category === Category.Line);
         const instrumentTags = selected.filter(t => t.category === Category.Instrument);
-
         if (baseTags.length === 1 && instrumentTags.length >= 1) {
           const baseTag = baseTags[0];
           const newRelationships = instrumentTags.map(inst => ({
@@ -899,10 +940,8 @@ const PdfViewerComponent = ({
             to: baseTag.id,
             type: RelationshipType.Installation,
           }));
-          
           const existingRels = new Set(relationships.map(r => `${r.from}-${r.to}-${r.type}`));
           const uniqueNewRels = newRelationships.filter(r => !existingRels.has(`${r.from}-${r.to}-${r.type}`));
-
           if (uniqueNewRels.length > 0) {
               setRelationships(prev => [...prev, ...uniqueNewRels]);
           }
@@ -913,7 +952,6 @@ const PdfViewerComponent = ({
         const selectedInstrumentTags = tags.filter(t => 
           selectedTagIds.includes(t.id) && t.category === Category.Instrument
         );
-        
         if (selectedInstrumentTags.length >= 2) {
           if (onManualCreateLoop) {
             onManualCreateLoop(selectedTagIds);
@@ -922,7 +960,6 @@ const PdfViewerComponent = ({
         } else {
         }
       } else if (e.key.toLowerCase() === 'v') {
-        // Toggle all relationships visibility
         const allRelationshipsVisible = Object.values(visibilitySettings.relationships).every(Boolean);
         const newState = !allRelationshipsVisible;
         updateVisibilitySettings({
@@ -934,10 +971,8 @@ const PdfViewerComponent = ({
           },
         });
       } else if (e.key.toLowerCase() === 'q' && pdfDoc) {
-        // Previous page
         setCurrentPage(prev => Math.max(1, prev - 1));
       } else if (e.key.toLowerCase() === 'w' && pdfDoc) {
-        // Next page
         setCurrentPage(prev => Math.min(pdfDoc.numPages, prev + 1));
       }
     };
@@ -970,7 +1005,6 @@ const PdfViewerComponent = ({
       const tag = tags.find(t => t.id === tagId);
 
       if (tag && tag.page === currentPage) {
-        // Use the unified scrollToCenter approach with proper rotation handling
         setTimeout(() => {
           setScrollToCenter({ tagId: tag.id, timestamp: Date.now() });
           setTimeout(() => setScrollToCenter(null), 100);
@@ -979,16 +1013,11 @@ const PdfViewerComponent = ({
     }
   }, [selectedTagIds, currentPage, viewport, tags, scale, setScrollToCenter]);
 
-  // Auto-scroll to pinged tag - now handled by scrollToCenter in Workspace
-  // This useLayoutEffect is no longer needed as pinged tag scrolling is handled by scrollToCenter
-
-  // Auto-scroll to selected description
   useLayoutEffect(() => {
     if (selectedDescriptionIds.length === 1 && scrollContainerRef.current && viewport) {
       const descriptionId = selectedDescriptionIds[0];
       const description = descriptions.find(d => d.id === descriptionId);
       if (description && description.page === currentPage) {
-        // Use the unified scrollToCenter approach with proper rotation handling
         setTimeout(() => {
           setScrollToCenter({ descriptionId: description.id, timestamp: Date.now() });
           setTimeout(() => setScrollToCenter(null), 100);
@@ -1004,68 +1033,45 @@ const PdfViewerComponent = ({
     isClickOnItem.current = true;
     const isMultiSelect = e.ctrlKey || e.metaKey;
 
-    // Debug raw text item selection
     const clickedItem = rawTextItems.find(item => item.id === rawTextItemId);
     if (clickedItem) {
-        
-        
-
-        // Check if it matches Drawing Number pattern for debugging
         const drawingNumberPattern = /[A-Z\d-]{5,}-[A-Z\d-]{5,}-\d{3,}/i;
         if (drawingNumberPattern.test(clickedItem.text)) {
-            
         }
     }
 
-    // Check if this raw text item is part of a note description (Annotation relationship)
     const noteRelationship = relationships.find(r =>
         r.type === RelationshipType.Annotation && r.to === rawTextItemId
     );
 
     if (noteRelationship && !isMultiSelect) {
-        // This is part of a note description - find all items for the same note
         const noteTagId = noteRelationship.from;
         const noteTag = tags.find(t => t.id === noteTagId);
-
         if (noteTag) {
-            
-
-            // Find all raw text items that belong to this note
             const allNoteItemIds = relationships
                 .filter(r => r.type === RelationshipType.Annotation && r.from === noteTagId)
                 .map(r => r.to);
-
-            
-
-            // Select all items belonging to this note
             setSelectedRawTextItemIds(allNoteItemIds);
-            setSelectedTagIds([noteTagId]); // Also select the NOTE tag to show the connection
+            setSelectedTagIds([noteTagId]);
         }
     } else if (isMultiSelect) {
-        // Add to or remove from raw text selection without affecting tag selection
         setSelectedRawTextItemIds(prev =>
             prev.includes(rawTextItemId) ? prev.filter(id => id !== rawTextItemId) : [...prev, rawTextItemId]
         );
     } else {
-        // A single click replaces the entire selection with just this one raw text item.
         setSelectedRawTextItemIds([rawTextItemId]);
         setSelectedTagIds([]);
     }
   };
 
-  // Show all tags for interaction, but apply different styling based on visibility
-  // Memoize current page tags for performance
   const currentTags = useMemo(() => 
     tags.filter(t => t.page === currentPage),
     [tags, currentPage]
   );
-  // Memoize current page raw text items for performance
   const currentRawTextItems = useMemo(() => 
     rawTextItems.filter(t => t.page === currentPage),
     [rawTextItems, currentPage]
   );
-  
-  // Memoize current page descriptions for performance
   const currentDescriptions = useMemo(() =>
     descriptions.filter(desc => desc.page === currentPage),
     [descriptions, currentPage]
@@ -1076,14 +1082,11 @@ const PdfViewerComponent = ({
       (e.target as Element).closest('[data-tag-id]') ||
       (e.target as Element).closest('[data-raw-text-id]')
     ) {
-      // The item's own onMouseDown will fire and set the isClickOnItem ref.
       return;
     }
   
     isClickOnItem.current = false; // A true background click
     isMoved.current = false;
-    
-    // Hide OPC navigation button on background click
     setOpcNavigationButton(null);
   
     if (mode === 'manualCreate' && viewerRef.current) {
@@ -1097,13 +1100,11 @@ const PdfViewerComponent = ({
     const isSelectionModifier = e.ctrlKey || e.metaKey;
 
     if (isSelectionModifier && mode === 'select' && viewerRef.current) {
-        // Area Selection Logic
         const rect = viewerRef.current.getBoundingClientRect();
         startPoint.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         setIsDragging(true);
         setSelectionRect({ ...startPoint.current, width: 0, height: 0 });
     } else if (!isSelectionModifier && mode === 'select' && scrollContainerRef.current) {
-        // Panning Logic
         setIsPanning(true);
         panStart.current = {
             scrollX: scrollContainerRef.current.scrollLeft,
@@ -1114,8 +1115,6 @@ const PdfViewerComponent = ({
         e.preventDefault();
     }
   };
-
-
 
   const handleMouseMove = (e) => {
     if (isPanning || isDragging) {
@@ -1144,10 +1143,8 @@ const PdfViewerComponent = ({
   };
 
   const handleMouseUp = (e) => {
-    // If the interaction started on an item, don't clear selection or process area selection.
-    // This is more robust than checking e.target on mouseup, which can be affected by re-renders.
     if (isClickOnItem.current) {
-      if (isDragging) { // This can happen if user clicks item and drags off
+      if (isDragging) {
         setIsDragging(false);
         setSelectionRect(null);
       }
@@ -1158,7 +1155,6 @@ const PdfViewerComponent = ({
       setIsPanning(false);
     }
     
-    // A simple click on the background without movement clears selection
     if (!isMoved.current && !isDragging) {
         setSelectedTagIds([]);
         setSelectedRawTextItemIds([]);
@@ -1171,7 +1167,6 @@ const PdfViewerComponent = ({
     
     if (mode === 'manualCreate') {
         setIsDragging(false);
-        // Check for minimal size to avoid accidental clicks
         if (selectionRect.width > 5 && selectionRect.height > 5) {
             const { x, y, width, height } = selectionRect;
             const bbox = {
@@ -1189,7 +1184,6 @@ const PdfViewerComponent = ({
 
     setIsDragging(false);
     
-    // Area selection can add both tags and raw items
     const intersectingTags = new Set<string>();
     for (const tag of currentTags) {
       const { x1, y1, x2, y2 } = tag.bbox;
@@ -1239,87 +1233,58 @@ const PdfViewerComponent = ({
   
   const getTagCenter = (tag) => {
     if (!viewport || !tag || !tag.bbox) return { x: 0, y: 0 };
-    
-    // Get the center coordinates in PDF coordinate system
     const pdfCenterX = (tag.bbox.x1 + tag.bbox.x2) / 2;
     const pdfCenterY = (tag.bbox.y1 + tag.bbox.y2) / 2;
-    
-    // Transform based on rotation
     let screenX, screenY;
-    
     switch (rotation) {
       case 90:
         screenX = pdfCenterY * scale;
         screenY = pdfCenterX * scale;
         break;
       case 180:
-        // For 180-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
       case 270:
-        // For 270-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
-      default: // 0 degrees
-        // For non-rotated documents, coordinates are already flipped in taggingService
+      default:
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
     }
-    
     return { x: screenX, y: screenY };
   };
 
-  // Create lookup maps for better performance
   const tagsMap = useMemo(() => new Map(tags.map((t: any) => [t.id, t])), [tags]);
   const rawTextMap = useMemo(() => new Map(rawTextItems.map((i: any) => [i.id, i])), [rawTextItems]);
   
-  // Memoize current relationships with pre-calculated rendering data and smart filtering
   const currentRelationshipsWithData = useMemo(() => {
-    // First check master toggle - if OFF, return empty array for performance
     if (!showAllRelationships) return [];
-    
     const visibleRelationships = [];
-    
     for (const r of relationships) {
-      // 🚀 Performance: Only process Connection and Installation relationships
-      // Skip LineAssociation as they shouldn't be visually rendered
       if (r.type !== RelationshipType.Connection &&
           r.type !== RelationshipType.Installation) {
-        continue; // Skip other relationship types entirely
+        continue;
       }
-      
-      // Check if this relationship type should be visible
       if (!isRelationshipVisible(r)) continue;
-      
       const fromTag = tagsMap.get(r.from) as any;
       if (!fromTag || fromTag.page !== currentPage) continue;
-
-      // Connection/Installation relationships are always Tag → Tag
       const toTag = tagsMap.get(r.to) as any;
       if (!toTag || toTag.page !== currentPage) continue;
-
-      // Smart filtering for selected entities only
       if (showOnlySelectedRelationships && selectedTagIds.length > 0) {
         const isFromSelected = selectedTagIds.includes(fromTag?.id || '');
         const isToSelected = selectedTagIds.includes(toTag?.id || '');
-        
         if (!isFromSelected && !isToSelected) continue;
       }
-      
-      // Pre-calculate rendering data
       visibleRelationships.push({
         rel: r,
         fromTag,
         toItem: toTag,
-        isAnnotation: false // Connection/Installation are never annotations
+        isAnnotation: false
       });
     }
-    
     return visibleRelationships;
   }, [relationships, tagsMap, currentPage, visibilitySettings.relationships, showAllRelationships, showOnlySelectedRelationships, selectedTagIds]);
   
@@ -1327,14 +1292,9 @@ const PdfViewerComponent = ({
       if (!viewport) return { x: 0, y: 0 };
       const item = rawTextMap.get(rawTextItemId) as any;
       if (!item) return { x: 0, y: 0 };
-      
-      // Get the center coordinates in PDF coordinate system
       const pdfCenterX = ((item.bbox?.x1 || 0) + (item.bbox?.x2 || 0)) / 2;
       const pdfCenterY = ((item.bbox?.y1 || 0) + (item.bbox?.y2 || 0)) / 2;
-      
-      // Transform based on rotation
       let screenX, screenY;
-      
       switch (rotation) {
         case 90:
           screenX = pdfCenterY * scale;
@@ -1345,103 +1305,76 @@ const PdfViewerComponent = ({
           screenY = (viewport.height / scale - pdfCenterY) * scale;
           break;
         case 270:
-          // For 270-degree rotation, coordinates are already transformed in taggingService
-          // Use them directly without additional transformation
           screenX = pdfCenterX * scale;
           screenY = pdfCenterY * scale;
           break;
-        default: // 0 degrees
-          // For non-rotated documents, coordinates are already flipped in taggingService
+        default:
           screenX = pdfCenterX * scale;
           screenY = pdfCenterY * scale;
           break;
       }
-      
       return { x: screenX, y: screenY };
   }
 
-  // Helper function to transform PDF coordinates to screen coordinates
   const transformPdfCoordinates = (pdfCenterX, pdfCenterY) => {
     if (!viewport) return { x: 0, y: 0 };
-    
     let screenX, screenY;
-    
     switch (rotation) {
       case 90:
-        // For 90-degree rotation, coordinates are already swapped in taggingService
-        // Use them directly without additional transformation
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
       case 180:
-        // For 180-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
       case 270:
-        // For 270-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
-      default: // 0 degrees
-        // For non-rotated documents, coordinates are already flipped in taggingService
+      default:
         screenX = pdfCenterX * scale;
         screenY = pdfCenterY * scale;
         break;
     }
-    
     return { x: screenX, y: screenY };
   }
 
-  // Helper function to transform PDF coordinates to screen coordinates
   const transformCoordinates = (x1, y1, x2, y2) => {
     if (!viewport) return { rectX: 0, rectY: 0, rectWidth: 0, rectHeight: 0 };
-    
     let rectX, rectY, rectWidth, rectHeight;
-    
     switch (rotation) {
       case 90:
-        // For 90-degree rotation, coordinates are already swapped in taggingService
-        // Use them directly without additional transformation
         rectX = x1 * scale;
         rectY = y1 * scale;
         rectWidth = (x2 - x1) * scale;
         rectHeight = (y2 - y1) * scale;
         break;
       case 180:
-        // For 180-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         rectX = x1 * scale;
         rectY = y1 * scale;
         rectWidth = (x2 - x1) * scale;
         rectHeight = (y2 - y1) * scale;
         break;
       case 270:
-        // For 270-degree rotation, coordinates are already transformed in taggingService
-        // Use them directly without additional transformation
         rectX = x1 * scale;
         rectY = y1 * scale;
         rectWidth = (x2 - x1) * scale;
         rectHeight = (y2 - y1) * scale;
         break;
-      default: // 0 degrees
-        // For non-rotated documents, coordinates are already flipped in taggingService
-        // Use them directly without additional y-coordinate transformation
+      default:
         rectX = x1 * scale;
         rectY = y1 * scale;
         rectWidth = (x2 - x1) * scale;
         rectHeight = (y2 - y1) * scale;
         break;
     }
-    
     return { rectX, rectY, rectWidth, rectHeight };
   };
 
   // ADD: 도면 검색 영역 오버레이 좌표 계산 (viewport 기준)
   const computeDrawingOverlayRect = () => {
-    const area = (appSettings as AppSettings | undefined)?.drawingSearchArea;
+    const area = appSettings?.drawingSearchArea;
     if (!viewport || !area || area.enabled === false) return null;
 
     const pageW = viewport.width;
@@ -1466,18 +1399,33 @@ const PdfViewerComponent = ({
     return { x, y, width, height };
   };
 
-
-
   const getModeStyles = () => {
     switch(mode){
       case 'connect': return 'cursor-crosshair ring-2 ring-blue-500';
       case 'manualCreate': return 'cursor-crosshair ring-2 ring-green-500';
-      default: return ''; // Inherit grab/grabbing cursor from parent
+      default: return '';
     }
   };
 
   return (
     <div className="relative h-full w-full">
+      {/* ==== Sheet No. tolerance 미니 패널 (UI)  ==== */}
+      <div className="absolute z-40 right-4 top-4 bg-white/90 backdrop-blur rounded-xl shadow-lg px-3 py-2 border border-slate-200 flex items-center space-x-2">
+        <label className="text-xs font-medium text-slate-600">
+          Sheet No. tol (px)
+        </label>
+        <input
+          type="number"
+          className="w-20 text-sm px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-400"
+          value={sheetNoTolerancePx}
+          min={0}
+          step={5}
+          onChange={(e) => setSheetNoTolerancePx(Math.max(0, Number(e.target.value || 0)))}
+          title="DrawingNumber 주변 좌/우 탐색 허용 거리(px). Sheet No. 탐색에만 사용됩니다."
+        />
+        <span className="text-[10px] text-slate-500">좌/우만 탐색</span>
+      </div>
+
       <div ref={scrollContainerRef} className={`h-full w-full overflow-auto ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}>
         <div className="p-4 grid place-items-center min-h-full">
             <div 
@@ -1486,7 +1434,7 @@ const PdfViewerComponent = ({
                 onMouseDown={handleViewerMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp} // Stop dragging if mouse leaves viewer
+                onMouseLeave={handleMouseUp}
             >
                 <canvas ref={canvasRef} />
                 {viewport && (
@@ -1495,37 +1443,6 @@ const PdfViewerComponent = ({
                     <marker id="arrowhead-connect" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill={colors.relationships.connection} /></marker>
                     <marker id="arrowhead-install" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill={colors.relationships.installation} /></marker>
                     </defs>
-
-                    {/* 도면 검색 영역 오버레이 */}
-                    {appSettings?.drawingSearchArea?.showOverlay && (() => {
-                      const rect = computeDrawingOverlayRect();
-                      if (!rect) return null;
-                      return (
-                        <g pointerEvents="none">
-                          {/* 채움(옅은 블루) */}
-                          <rect
-                            x={rect.x}
-                            y={rect.y}
-                            width={rect.width}
-                            height={rect.height}
-                            fill="rgba(59,130,246,0.08)"  // tailwind sky-500 느낌
-                            rx="6"
-                          />
-                          {/* 점선 테두리 */}
-                          <rect
-                            x={rect.x}
-                            y={rect.y}
-                            width={rect.width}
-                            height={rect.height}
-                            fill="none"
-                            stroke="rgba(59,130,246,0.9)"
-                            strokeWidth="2"
-                            strokeDasharray="6 4"
-                            rx="6"
-                          />
-                        </g>
-                      );
-                    })()}
 
                     {/* Render detected CV lines (piping) - shown as debug visualization */}
                     {detectedLines
@@ -1558,15 +1475,10 @@ const PdfViewerComponent = ({
                          const isHighlighted = highlightedRawTextItemIds.has(item.id);
                          const isLinked = linkedRawTextItemIds.has(item.id);
 
-                         // Check if this raw text is likely a note description (on right side of page)
-                         // Using 40% of page width as threshold (same as noteDescriptionOptimizer)
                          const pageWidth = viewport ? viewport.width / scale : 800;
                          const isLikelyNoteDescription = x1 > pageWidth * 0.40;
-
-                         // Hide unconnected note descriptions
                          const shouldHide = isLikelyNoteDescription && !isLinked && !isSelected;
 
-                         // Check if this is part of a multi-line note selection
                          const isPartOfNoteSelection = isSelected && selectedRawTextItemIds.length > 1 &&
                              relationships.some(r =>
                                  r.type === RelationshipType.Annotation &&
@@ -1576,19 +1488,17 @@ const PdfViewerComponent = ({
 
                          const getRectProps = () => {
                              if (shouldHide) {
-                                 // Hide unconnected note descriptions (but keep them interactive)
                                  return {
-                                     fill: "rgba(255, 255, 255, 0.003)", // Ultra-low opacity for interaction
+                                     fill: "rgba(255, 255, 255, 0.003)",
                                      stroke: "transparent",
                                      strokeWidth: "0",
                                      strokeDasharray: "none"
                                  };
                              }
                              if (isSelected) {
-                                 // Special styling for multi-line note selections
                                  if (isPartOfNoteSelection) {
                                      return {
-                                         fill: "rgb(251 191 36 / 0.5)", // Amber for note descriptions
+                                         fill: "rgb(251 191 36 / 0.5)",
                                          stroke: "#fbbf24",
                                          strokeWidth: "2.5",
                                          strokeDasharray: "none"
@@ -1602,18 +1512,16 @@ const PdfViewerComponent = ({
                                  };
                              }
                              if (isHighlighted) {
-                                 // 태그 선택 시 관련 Raw Text 강조 - 진한 보라색
                                  return { 
-                                     fill: "rgb(139 69 255 / 0.6)", // Violet with 60% opacity
+                                     fill: "rgb(139 69 255 / 0.6)",
                                      stroke: "#8b5cf6",
                                      strokeWidth: "2.5", 
                                      strokeDasharray: "none" 
                                  };
                              }
                              if (isLinked) {
-                                // Annotation 연결된 상태 - 매우 연한 보라색
                                 return { 
-                                    fill: `${colors.relationships.annotation}4D`, // 30% opacity
+                                    fill: `${colors.relationships.annotation}4D`,
                                     stroke: colors.relationships.annotation,
                                     strokeWidth: "1.5", 
                                     strokeDasharray: "none"
@@ -1661,7 +1569,6 @@ const PdfViewerComponent = ({
                             }
                         }
 
-                        // Check if this relationship should be highlighted
                         const isPinged = pingedRelationshipId === rel.id;
 
                         return (
@@ -1681,39 +1588,31 @@ const PdfViewerComponent = ({
                     {currentTags.map(tag => {
                     const { x1, y1, x2, y2 } = tag.bbox;
 
-                    // Skip tags with invalid coordinates to prevent NaN errors
                     if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
-                      // Skipping tag with NaN coordinates
                       return null;
                     }
 
                     const { rectX, rectY, rectWidth, rectHeight } = transformCoordinates(x1, y1, x2, y2);
-
-                    // Skip if transformed coordinates are invalid
                     if (isNaN(rectX) || isNaN(rectY) || isNaN(rectWidth) || isNaN(rectHeight)) {
-                      // Skipping tag with NaN transformed coordinates
                       return null;
                     }
 
                     const isSelected = selectedTagIds.includes(tag.id);
-                    const isHighlighted = highlightedTagIds.has(tag.id); // Use highlight state for visual feedback
+                    const isHighlighted = highlightedTagIds.has(tag.id);
                     const isRelStart = tag.id === relationshipStartTag;
                     const isRelated = relatedTagIds.has(tag.id);
 
-                    // Check if this is an unconnected NOTE tag
                     const isNoteTag = tag.category === Category.NotesAndHolds &&
                                      tag.text.toUpperCase().includes('NOTE');
                     const hasNoteConnection = relationships.some(rel =>
                       rel.type === RelationshipType.Note && rel.to === tag.id
                     );
 
-                    // Check if this tag is connected to a NOTE
                     const isConnectedToNote = relationships.some(rel =>
                       rel.type === RelationshipType.Note &&
                       (rel.from === tag.id || rel.to === tag.id)
                     );
 
-                    // Hide unconnected NOTE tags
                     const isVisible = isNoteTag && !hasNoteConnection ? false : isTagVisible(tag);
                     const color = getEntityColor(tag.category);
 
@@ -1733,13 +1632,10 @@ const PdfViewerComponent = ({
                             setSelectedTagIds([tag.id]);
                             setSelectedRawTextItemIds([]);
                             setSelectedDescriptionIds([]);
-                            // setTagSelectionSource('pdf'); // Not passed as prop
                           }
                         }} className="cursor-pointer">
-                          {/* Add glow effect for NOTE-connected tags */}
                           {isConnectedToNote && isVisible && !isNoteTag && (
                             <>
-                              {/* Outer glow */}
                               <rect
                                 x={rectX - 4}
                                 y={rectY - 4}
@@ -1752,7 +1648,6 @@ const PdfViewerComponent = ({
                                 rx="4"
                                 className="animate-pulse"
                               />
-                              {/* Inner glow */}
                               <rect
                                 x={rectX - 2}
                                 y={rectY - 2}
@@ -1760,13 +1655,12 @@ const PdfViewerComponent = ({
                                 height={rectHeight + 4}
                                 stroke={colors.relationships.note || '#14b8a6'}
                                 strokeWidth="1"
-                                fill={`${colors.relationships.note || '#14b8a6'}1A`} // 10% fill
+                                fill={`${colors.relationships.note || '#14b8a6'}1A`}
                                 opacity="0.5"
                                 rx="2"
                               />
                             </>
                           )}
-                          {/* Render all tags as rectangles */}
                           <rect
                             x={rectX}
                             y={rectY}
@@ -1778,16 +1672,15 @@ const PdfViewerComponent = ({
                             fill={
                               isVisible
                                 ? isSelected
-                                  ? `${getEntityColor(tag.category)}CC` // 80% opacity when selected
+                                  ? `${getEntityColor(tag.category)}CC`
                                   : isConnectedToNote && !isNoteTag
-                                    ? `${getEntityColor(tag.category)}59` // 35% opacity when connected to NOTE
-                                    : `${getEntityColor(tag.category)}33` // 20% opacity when not selected
+                                    ? `${getEntityColor(tag.category)}59`
+                                    : `${getEntityColor(tag.category)}33`
                                 : 'rgba(255, 255, 255, 0.003)'
                             }
                             strokeDasharray={isRelStart ? "4 2" : "none"}
                             style={{ pointerEvents: 'all' }}
                           />
-                          {/* Unified highlight system for regular tags */}
                           <TagHighlight
                             bbox={{ x1: rectX, y1: rectY, x2: rectX + rectWidth, y2: rectY + rectHeight }}
                             type={isRelated && !isHighlighted ? "related" : "primary"}
@@ -1797,7 +1690,6 @@ const PdfViewerComponent = ({
                             isMultiSelection={selectedTagIds.length > 1}
                             colorSettings={colors}
                           />
-                          {/* AI Label indicator */}
                           {isVisible && false && (
                             <>
                               <rect
@@ -1831,8 +1723,6 @@ const PdfViewerComponent = ({
 
                       const { x1, y1, x2, y2 } = tag.bbox;
                       const { rectX, rectY, rectWidth, rectHeight } = transformCoordinates(x1, y1, x2, y2);
-
-                      // Calculate center and diagonal radius (3x for connection range)
                       const centerX = rectX + rectWidth / 2;
                       const centerY = rectY + rectHeight / 2;
                       const diagonalRadius = Math.sqrt(rectWidth * rectWidth + rectHeight * rectHeight) / 2 * 3;
@@ -1856,10 +1746,8 @@ const PdfViewerComponent = ({
                     {pingedTagId && (() => {
                       const tagToPing = currentTags.find(t => t.id === pingedTagId);
                       if (!tagToPing) return null;
-                      
                       const { x1, y1, x2, y2 } = tagToPing.bbox;
                       const { rectX, rectY, rectWidth, rectHeight } = transformCoordinates(x1, y1, x2, y2);
-
                       return (
                         <TagHighlight
                           bbox={{ x1: rectX, y1: rectY, x2: rectX + rectWidth, y2: rectY + rectHeight }}
@@ -1913,10 +1801,8 @@ const PdfViewerComponent = ({
                       if (!descToPing || descToPing.page !== currentPage) {
                         return null;
                       }
-                      
                       const { x1, y1, x2, y2 } = descToPing.bbox;
                       const { rectX, rectY, rectWidth, rectHeight } = transformCoordinates(x1, y1, x2, y2);
-
                       return (
                         <TagHighlight
                           bbox={{ x1: rectX, y1: rectY, x2: rectX + rectWidth, y2: rectY + rectHeight }}
@@ -1960,7 +1846,6 @@ const PdfViewerComponent = ({
 
 // Export memoized component for better performance
 export const PdfViewer = React.memo(PdfViewerComponent, (prevProps, nextProps) => {
-  // Custom comparison function for deep equality check on critical props
   return (
     prevProps.currentPage === nextProps.currentPage &&
     prevProps.scale === nextProps.scale &&
@@ -1973,7 +1858,6 @@ export const PdfViewer = React.memo(PdfViewerComponent, (prevProps, nextProps) =
     prevProps.selectedRawTextItemIds === nextProps.selectedRawTextItemIds &&
     prevProps.selectedDescriptionIds === nextProps.selectedDescriptionIds &&
     prevProps.visibilitySettings === nextProps.visibilitySettings &&
-    prevProps.showAutoLinkRanges === nextProps.showAutoLinkRanges &&
-    prevProps.appSettings === nextProps.appSettings   // ✅ 추가
+    prevProps.showAutoLinkRanges === nextProps.showAutoLinkRanges
   );
 });
