@@ -1409,21 +1409,49 @@ const PdfViewerComponent = ({
 
   return (
     <div className="relative h-full w-full">
-      {/* ==== Sheet No. tolerance 미니 패널 (UI)  ==== */}
-      <div className="absolute z-40 right-4 top-4 bg-white/90 backdrop-blur rounded-xl shadow-lg px-3 py-2 border border-slate-200 flex items-center space-x-2">
-        <label className="text-xs font-medium text-slate-600">
+      {/* ==== Sheet No. tolerance (고정 오버레이 UI) ==== */}
+      <div
+        style={{
+          position: 'fixed',
+          top: '14px',
+          right: '14px',
+          zIndex: 9999,                         // 항상 맨 위
+          background: 'rgba(255,255,255,0.95)', // Tailwind 없어도 보이게
+          backdropFilter: 'saturate(180%) blur(6px)',
+          border: '1px solid rgba(100,116,139,0.35)',
+          borderRadius: '12px',
+          padding: '8px 10px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          boxShadow:
+            '0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)',
+        }}
+      >
+        <span style={{ fontSize: 12, color: '#334155', fontWeight: 600 }}>
           Sheet No. tol (px)
-        </label>
+        </span>
         <input
           type="number"
-          className="w-20 text-sm px-2 py-1 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-400"
           value={sheetNoTolerancePx}
           min={0}
           step={5}
-          onChange={(e) => setSheetNoTolerancePx(Math.max(0, Number(e.target.value || 0)))}
+          onChange={(e) =>
+            setSheetNoTolerancePx(Math.max(0, Number(e.currentTarget.value || 0)))
+          }
           title="DrawingNumber 주변 좌/우 탐색 허용 거리(px). Sheet No. 탐색에만 사용됩니다."
+          style={{
+            width: 88,
+            fontSize: 13,
+            padding: '6px 8px',
+            border: '1px solid #cbd5e1',
+            borderRadius: 8,
+            outline: 'none',
+          }}
+          onFocus={(e) => (e.currentTarget.style.borderColor = '#8b5cf6')}
+          onBlur={(e) => (e.currentTarget.style.borderColor = '#cbd5e1')}
         />
-        <span className="text-[10px] text-slate-500">좌/우만 탐색</span>
+        <span style={{ fontSize: 10, color: '#64748b' }}>좌/우만 탐색</span>
       </div>
 
       <div ref={scrollContainerRef} className={`h-full w-full overflow-auto ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}>
@@ -1861,3 +1889,4 @@ export const PdfViewer = React.memo(PdfViewerComponent, (prevProps, nextProps) =
     prevProps.showAutoLinkRanges === nextProps.showAutoLinkRanges
   );
 });
+export default PdfViewer;
