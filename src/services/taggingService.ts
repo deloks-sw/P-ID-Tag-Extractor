@@ -476,32 +476,44 @@ export const extractTags = async (pdfDoc, pageNum, patterns, tolerances, appSett
 
             if (bestCandidate) {
                 candidates.forEach(c => { c.isSelected = (c.index === bestCandidate.index); });
+            
+                // === [NEW] 같은 줄 & 오른쪽에서만 Sheet No. 찾기 ===
+                // H_TOL: 오른쪽(가로) 허용 거리(px). 사용자가 Settings에서 지정
+                const H_TOL = Math.max(0, appSettings?.sheetNoTolerancePx ?? 40);
+                // V_OVERLAP: 같은 줄 판정(세로로 50% 이상 겹치면 같은 줄)
+                const V_OVERLAP = 0.5;
 
-                // === [NEW] 같은 줄 & 오른쪽에서 Sheet No. 찾기 ===
-                // 허용치(필요 시 tolerances에서 가져와도 됨)
-                const Y_TOL = Math.max(0, appSettings?.sheetNoTolerancePx ?? 3);
-                const X_GAP = 2;  // 오른쪽 인접 기준
+                const isSameLine = (a, b) => {
+                  const h1 = a.y2 - a.y1;
+                  const h2 = b.y2 - b.y1;
+                  const overlap = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+                  return overlap > Math.min(h1, h2) * V_OVERLAP;
+                };
 
-                // 같은 행 & 오른쪽 텍스트
-                const sameLine = textItems.filter(t => {
-                    const tb = calculateBbox(t, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
-                    const sameRow = Math.abs(tb.y2 - bestCandidate.bbox.y2) <= Y_TOL;
-                    const onRight = tb.x1 >= (bestCandidate.bbox.x2 - X_GAP);
-                    return sameRow && onRight;
-                });
-
-                const sheetItem = sameLine.find(t => {
+                // 오른쪽 후보만: 같은 줄 + 오른쪽으로 H_TOL 이내
+                const rightCandidates = textItems
+                  .filter(t => t !== bestCandidate.item)
+                  .map(t => ({ t, b: calculateBbox(t, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation) }))
+                  .filter(({ b }) => isSameLine(bestCandidate.bbox, b))
+                  .map(({ t, b }) => {
                     const s = (t.str || '').trim();
-                    return sheetRegex.test(s);
-                });
+                    if (!sheetRegex.test(s)) return null;
+                    const distRight = b.x1 - bestCandidate.bbox.x2;   // 오른쪽이면 양수
+                    if (distRight < 0 || distRight > H_TOL) return null;
+                    return { item: t, bbox: b, text: s, dist: distRight };
+                  })
+                  .filter(Boolean)
+                  .sort((a, b) => a.dist - b.dist); // 가장 가까운 것 우선
+
+                const sheetItem = rightCandidates.length > 0 ? rightCandidates[0] : null;
 
                 const drawingText = bestCandidate.text.trim();
                 let finalText = drawingText;
                 const metadata: any = { page: pageNum };
 
                 if (sheetItem) {
-                    const sb = calculateBbox(sheetItem, viewBoxOffsetX, viewBoxOffsetY, viewport, rotation);
-                    metadata.sheet = (sheetItem.str || '').trim();
+                    const sb = sheetItem.bbox; // 이미 bbox 계산됨
+                    metadata.sheet = sheetItem.text;
                     if (combine) {
                         finalText = `${drawingText}-${metadata.sheet}`;
                     }
