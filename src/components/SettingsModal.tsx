@@ -858,7 +858,7 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                 </div>
               </div>
             </div>
-          </div>
+
         ) : activeTab === 'loops' ? (
           /* Loop Number Rules Tab Content */
           <div className="space-y-6">
