@@ -348,7 +348,7 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
             {/* Right Column - AI Regex Generation */}
             <div className="lg:col-span-1">
               <div className="p-4 bg-gray-100 rounded-lg">
-                <h3 className="text-sm font-semibold text-gray-800 mb-4">AI 정규식 생성</h3>
+                <h3 className="text-sm font-semibold text-gray-800 mb-4">정규식 생성</h3>
                 <p className="text-xs text-gray-600 mb-4">
                   실제 P&ID 예시 데이터를 입력하면 AI가 적합한 정규식을 생성합니다.
                 </p>
@@ -659,13 +659,13 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                     type="number"
                     min={0}
                     value={
-                      Number.isFinite(localAppSettings?.sheetNoTolerance as number)
-                        ? (localAppSettings?.sheetNoTolerance as number)
+                      Number.isFinite(localAppSettings?.sheetNoTolerancePx as number)
+                        ? (localAppSettings?.sheetNoTolerancePx as number)
                         : 60
                     }
                     onChange={(e) => {
                       const v = Math.max(0, Number(e.target.value || 0));
-                      setLocalAppSettings(prev => ({ ...prev, sheetNoTolerance: v }));
+                      setLocalAppSettings(prev => ({ ...prev, sheetNoTolerancePx: v }));
                     }}
                     className="w-full bg-white border border-gray-300 rounded-md p-2 text-sm"
                     placeholder="예: 60"
