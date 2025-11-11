@@ -357,7 +357,7 @@ export const SettingsModal = ({ patterns, tolerances, appSettings, colorSettings
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      라인 번호 예시
+                      라인 넘버 예시
                     </label>
                     <input
                       type="text"
